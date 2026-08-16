@@ -113,10 +113,34 @@ export default function Compass() {
     wasAlignedRef.current = aligned;
   }, [aligned]);
 
+  const { request: requestLocation } = geo;
+
+  // Skip the gate on platforms without a tap-gated sensor permission (Android,
+  // desktop) when location was already granted — iOS always needs the tap.
+  useEffect(() => {
+    const requester = window.DeviceOrientationEvent as unknown as {
+      requestPermission?: unknown;
+    } | undefined;
+    if (typeof requester?.requestPermission === "function") return;
+    let cancelled = false;
+    navigator.permissions
+      ?.query({ name: "geolocation" })
+      .then((p) => {
+        if (!cancelled && p.state === "granted") {
+          setStarted(true);
+          requestLocation();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [requestLocation]);
+
   const begin = () => {
     setStarted(true);
     void compass.start();
-    geo.request();
+    requestLocation();
   };
 
   // ——— Gate: always wait for the tap so both permission prompts come from one gesture ———
