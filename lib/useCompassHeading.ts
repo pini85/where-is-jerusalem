@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyDeclination } from "./geo";
-import { CircularSmoother, magneticHeading, tiltAngle } from "./orientation";
+import { CircularSmoother, magneticHeading, nextCumulativeRotation, tiltAngle } from "./orientation";
 
 export type CompassStatus =
   | "idle" // listeners attached, waiting for the first event (Android)
@@ -19,6 +19,8 @@ export interface CompassHeadingResult {
    * declination is known it is magnetic-only and `provisional` is true.
    */
   heading: number | null;
+  /** Unbounded cumulative rotation (−heading) that always animates the short way. */
+  rotationDeg: number;
   /** Heading lacks the declination correction (Android before geolocation). */
   provisional: boolean;
   needsCalibration: boolean;
@@ -43,23 +45,32 @@ const LOW_CONFIDENCE = 0.9;
 const LOW_CONFIDENCE_SUSTAIN_MS = 1500;
 const FIRST_EVENT_TIMEOUT_MS = 3000;
 
+function detectInitialStatus(): CompassStatus {
+  if (typeof window === "undefined") return "idle"; // prerender placeholder
+  if (typeof window.DeviceOrientationEvent === "undefined") return "unsupported";
+  const requester = window.DeviceOrientationEvent as unknown as PermissionRequester;
+  return typeof requester.requestPermission === "function" ? "needs-permission" : "idle";
+}
+
 export function useCompassHeading(declinationDeg: number | null): CompassHeadingResult {
-  const [status, setStatus] = useState<CompassStatus>("idle");
+  const [status, setStatus] = useState<CompassStatus>(detectInitialStatus);
   const [heading, setHeading] = useState<number | null>(null);
+  const [rotationDeg, setRotationDeg] = useState(0);
   const [provisional, setProvisional] = useState(false);
   const [needsCalibration, setNeedsCalibration] = useState(false);
   const [tiltTooHigh, setTiltTooHigh] = useState(false);
 
-  const declinationRef = useRef(declinationDeg);
-  declinationRef.current = declinationDeg;
+  const declinationRef = useRef<number | null>(null);
+  useEffect(() => {
+    declinationRef.current = declinationDeg;
+  }, [declinationDeg]);
 
-  const smootherRef = useRef(new CircularSmoother(SMOOTHING_K));
+  const smootherRef = useRef<CircularSmoother | null>(null);
+  const rotationRef = useRef(0);
   const lastFlushRef = useRef(0);
   const lowConfidenceSinceRef = useRef<number | null>(null);
   const gotEventRef = useRef(false);
   const detachRef = useRef<(() => void) | null>(null);
-  const statusRef = useRef(status);
-  statusRef.current = status;
 
   const handleEvent = useCallback((event: WebkitOrientationEvent) => {
     let magnetic: number | null = null;
@@ -84,6 +95,7 @@ export function useCompassHeading(declinationDeg: number | null): CompassHeading
     if (magnetic === null) return;
     gotEventRef.current = true;
 
+    smootherRef.current ??= new CircularSmoother(SMOOTHING_K);
     const { heading: smoothed, confidence } = smootherRef.current.update(magnetic);
 
     const now = performance.now();
@@ -102,12 +114,12 @@ export function useCompassHeading(declinationDeg: number | null): CompassHeading
     lastFlushRef.current = now;
 
     const declination = declinationRef.current;
-    const trueHeading = isTrueNorth
-      ? smoothed
-      : applyDeclination(smoothed, declination ?? 0);
+    const trueHeading = isTrueNorth ? smoothed : applyDeclination(smoothed, declination ?? 0);
+    rotationRef.current = nextCumulativeRotation(rotationRef.current, -trueHeading);
 
-    if (statusRef.current !== "active") setStatus("active");
+    setStatus((s) => (s === "active" ? s : "active"));
     setHeading(Math.round(trueHeading * 2) / 2);
+    setRotationDeg(rotationRef.current);
     setProvisional(!isTrueNorth && declination === null);
     setNeedsCalibration(calibration);
     setTiltTooHigh(tiltAngle(event.beta ?? 0, event.gamma ?? 0) > TILT_LIMIT_DEG);
@@ -125,21 +137,11 @@ export function useCompassHeading(declinationDeg: number | null): CompassHeading
       window.removeEventListener(eventName, handleEvent as EventListener);
       window.clearTimeout(timeout);
     };
-    return detachRef.current;
   }, [handleEvent]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.DeviceOrientationEvent === "undefined") {
-      setStatus("unsupported");
-      return;
-    }
-    const requester = window.DeviceOrientationEvent as unknown as PermissionRequester;
-    if (typeof requester.requestPermission === "function") {
-      setStatus("needs-permission");
-      // listeners attach in start(), after the permission grant
-      return () => detachRef.current?.();
-    }
-    attach();
+    // iOS attaches in start() after the permission grant; Android attaches now
+    if (detectInitialStatus() === "idle") attach();
     return () => detachRef.current?.();
   }, [attach]);
 
@@ -149,7 +151,6 @@ export function useCompassHeading(declinationDeg: number | null): CompassHeading
     try {
       const result = await requester.requestPermission();
       if (result === "granted") {
-        setStatus("idle");
         attach();
       } else {
         setStatus("denied");
@@ -159,5 +160,5 @@ export function useCompassHeading(declinationDeg: number | null): CompassHeading
     }
   }, [attach]);
 
-  return { status, heading, provisional, needsCalibration, tiltTooHigh, start };
+  return { status, heading, rotationDeg, provisional, needsCalibration, tiltTooHigh, start };
 }
