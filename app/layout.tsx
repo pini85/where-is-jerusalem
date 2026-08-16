@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Where is Jerusalem",
   description: "A steady compass pointing toward Jerusalem from wherever you are.",
+  appleWebApp: {
+    capable: true,
+    title: "Jerusalem",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
