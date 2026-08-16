@@ -87,10 +87,12 @@ function CompassCard({
   );
 }
 
+type StartPhase = "checking" | "gate" | "running";
+
 export default function Compass() {
   const geo = useGeolocation();
   const compass = useCompassHeading(geo.declinationDeg);
-  const [started, setStarted] = useState(false);
+  const [phase, setPhase] = useState<StartPhase>("checking");
   const [aligned, setAligned] = useState(false);
   const wasAlignedRef = useRef(false);
 
@@ -115,36 +117,51 @@ export default function Compass() {
 
   const { request: requestLocation } = geo;
 
-  // Skip the gate on platforms without a tap-gated sensor permission (Android,
-  // desktop) when location was already granted — iOS always needs the tap.
+  // Decide the entry screen before showing anything, so the gate never
+  // flashes on platforms that can auto-start. iOS always needs the tap
+  // (its sensor permission is gesture-gated); Android and desktop can skip
+  // the gate when location was already granted.
   useEffect(() => {
-    const requester = window.DeviceOrientationEvent as unknown as {
-      requestPermission?: unknown;
-    } | undefined;
-    if (typeof requester?.requestPermission === "function") return;
     let cancelled = false;
-    navigator.permissions
-      ?.query({ name: "geolocation" })
-      .then((p) => {
-        if (!cancelled && p.state === "granted") {
-          setStarted(true);
-          requestLocation();
+    const decide = async () => {
+      const requester = window.DeviceOrientationEvent as unknown as
+        | { requestPermission?: unknown }
+        | undefined;
+      if (typeof requester?.requestPermission !== "function") {
+        try {
+          const p = await navigator.permissions?.query({ name: "geolocation" });
+          if (!cancelled && p?.state === "granted") {
+            setPhase("running");
+            requestLocation();
+            return;
+          }
+        } catch {
+          // fall through to the gate
         }
-      })
-      .catch(() => {});
+      } else {
+        await Promise.resolve(); // keep state updates out of the sync effect body
+      }
+      if (!cancelled) setPhase("gate");
+    };
+    void decide();
     return () => {
       cancelled = true;
     };
   }, [requestLocation]);
 
   const begin = () => {
-    setStarted(true);
+    setPhase("running");
     void compass.start();
     requestLocation();
   };
 
-  // ——— Gate: always wait for the tap so both permission prompts come from one gesture ———
-  if (!started) {
+  // ——— Blank dark screen for the few ms while the entry screen is decided ———
+  if (phase === "checking") {
+    return <Shell />;
+  }
+
+  // ——— Gate: wait for the tap so both permission prompts come from one gesture ———
+  if (phase === "gate") {
     return (
       <Shell>
         <h1 className="text-3xl font-semibold tracking-tight">Where is Jerusalem</h1>
@@ -249,7 +266,7 @@ export default function Compass() {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({ children }: { children?: React.ReactNode }) {
   return (
     <main className="flex min-h-dvh select-none flex-col items-center justify-center gap-6 bg-neutral-950 p-6 text-neutral-100">
       {children}
