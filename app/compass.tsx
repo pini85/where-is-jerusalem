@@ -94,7 +94,20 @@ export default function Compass() {
   const compass = useCompassHeading(geo.declinationDeg);
   const [phase, setPhase] = useState<StartPhase>("checking");
   const [aligned, setAligned] = useState(false);
+  // Chrome only allows navigator.vibrate() after the page has been tapped at
+  // least once ("sticky user activation") — auto-start skips the tap, so we
+  // track it and hint until vibration is unlocked.
+  const [interacted, setInteracted] = useState(
+    () => typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === true,
+  );
   const wasAlignedRef = useRef(false);
+
+  useEffect(() => {
+    if (interacted) return;
+    const onDown = () => setInteracted(true);
+    window.addEventListener("pointerdown", onDown, { once: true });
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, [interacted]);
 
   const heading = compass.heading;
   const bearing = geo.bearingDeg;
@@ -203,7 +216,7 @@ export default function Compass() {
     return (
       <Shell>
         <h1 className="text-2xl font-semibold tracking-tight">Where is Jerusalem</h1>
-        <div className="relative aspect-square w-[min(85vw,22rem)]">
+        <div className="relative aspect-square w-[min(85vw,55dvh,22rem)]">
           <CompassCard rotationDeg={0} bearingDeg={bearing} aligned={false} animate={false} />
         </div>
         <p className="max-w-sm text-center text-neutral-400">
@@ -222,11 +235,13 @@ export default function Compass() {
       ? "Hold your phone flat"
       : compass.provisional
         ? "Waiting for location to fine-tune north…"
-        : null;
+        : !interacted && typeof navigator !== "undefined" && "vibrate" in navigator
+          ? "Tap the screen once to enable vibration"
+          : null;
 
   return (
     <Shell>
-      <div className="relative aspect-square w-[min(85vw,22rem)]">
+      <div className="relative aspect-square w-[min(85vw,55dvh,22rem)]">
         {/* Fixed lubber line: your heading, always at 12 o'clock */}
         <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-sky-400">
           <svg width="22" height="14" viewBox="0 0 22 14" aria-hidden>
@@ -268,7 +283,7 @@ export default function Compass() {
 
 function Shell({ children }: { children?: React.ReactNode }) {
   return (
-    <main className="flex min-h-dvh select-none flex-col items-center justify-center gap-6 bg-neutral-950 p-6 text-neutral-100">
+    <main className="flex h-dvh touch-none select-none flex-col items-center justify-center gap-5 overflow-hidden bg-neutral-950 p-6 text-neutral-100">
       {children}
     </main>
   );
